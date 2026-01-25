@@ -24,6 +24,14 @@ const DUMMY_TIME_SLOTS = [
   "3:00 PM", "3:30 PM", "4:00 PM", "4:30 PM", "5:00 PM", "5:30 PM",
 ];
 
+const DUMMY_SERVICES = [
+  { id: "1", name: "Haircut", price: "RM 25", duration: "30 min" },
+  { id: "2", name: "Haircut + Beard", price: "RM 40", duration: "45 min" },
+  { id: "3", name: "Beard Trim", price: "RM 15", duration: "20 min" },
+  { id: "4", name: "Hair Wash", price: "RM 10", duration: "15 min" },
+  { id: "5", name: "Full Service", price: "RM 50", duration: "60 min" },
+];
+
 type BookingType = "walk-in" | "booking" | null;
 
 interface FormData {
@@ -34,6 +42,7 @@ interface FormData {
   barberId: string;
   date: string;
   time: string;
+  serviceId: string;
   queueNumber?: number;
 }
 
@@ -50,6 +59,7 @@ export default function BookingPage() {
     barberId: "",
     date: new Date().toISOString().split("T")[0],
     time: "",
+    serviceId: "",
   });
   const [isSubmitted, setIsSubmitted] = useState(false);
 
@@ -131,6 +141,7 @@ export default function BookingPage() {
       barberId: "",
       date: new Date().toISOString().split("T")[0],
       time: "",
+      serviceId: "",
     });
     setStep(1);
     setIsSubmitted(false);
@@ -152,6 +163,7 @@ export default function BookingPage() {
 
   const selectedShop = DUMMY_SHOPS.find((s) => s.id === formData.shopId);
   const selectedBarber = DUMMY_BARBERS.find((b) => b.id === formData.barberId);
+  const selectedService = DUMMY_SERVICES.find((s) => s.id === formData.serviceId);
 
   // Success Screen
   if (isSubmitted) {
@@ -161,9 +173,13 @@ export default function BookingPage() {
         <main className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
           <div className="w-full max-w-md bg-white dark:bg-zinc-950 rounded-2xl shadow-lg border border-zinc-100 dark:border-zinc-800 p-6 sm:p-8 text-center">
             <div className="w-16 h-16 bg-linear-to-r from-blue-600 to-blue-700 dark:from-black dark:to-blue-800 rounded-full flex items-center justify-center mx-auto mb-6">
-              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
+              {formData.type === "walk-in" && formData.queueNumber ? (
+                <span className="text-2xl font-bold text-white">#{formData.queueNumber}</span>
+              ) : (
+                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
             </div>
             <h2 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
               {formData.type === "walk-in" ? "Walk-in Confirmed!" : "Booking Confirmed!"}
@@ -234,7 +250,7 @@ export default function BookingPage() {
           {/* Progress Indicator */}
           <div className="mb-6 sm:mb-8">
             <div className="flex items-center justify-center gap-2">
-              {[1, 2, 3, 4].map((i) => (
+              {[1, 2, 3, 4, 5].map((i) => (
                 <div key={i} className="flex items-center">
                   <div
                     className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-sm font-medium transition-all ${
@@ -253,7 +269,7 @@ export default function BookingPage() {
                       i
                     )}
                   </div>
-                  {i < 4 && (
+                  {i < 5 && (
                     <div
                       className={`w-8 sm:w-12 h-1 mx-1 rounded transition-all ${
                         step > i ? "bg-linear-to-r from-blue-600 to-blue-700 dark:from-black dark:to-blue-800" : step === i ? "bg-linear-to-r from-zinc-900 to-blue-700 dark:from-black dark:to-blue-800" : "bg-zinc-200 dark:bg-zinc-800"
@@ -267,8 +283,9 @@ export default function BookingPage() {
               <span className="text-xs sm:text-sm text-zinc-500 dark:text-zinc-400">
                 {step === 1 && "Choose Type"}
                 {step === 2 && (formData.type === "walk-in" ? "Your Details" : "Select Date & Shop")}
-                {step === 3 && "Choose Barber"}
-                {step === 4 && "Confirm"}
+                {step === 3 && (formData.type === "walk-in" ? "Select Service" : "Choose Barber")}
+                {step === 4 && (formData.type === "walk-in" ? "Choose Barber" : "Select Service")}
+                {step === 5 && "Confirm"}
               </span>
             </div>
           </div>
@@ -411,76 +428,99 @@ export default function BookingPage() {
               </div>
             )}
 
-            {/* Step 3: Choose Barber (optional for walk-in) / Time for booking */}
+            {/* Step 3: Services (walk-in) / Time & Barber (booking) */}
             {step === 3 && (
               <div className="space-y-6">
-                <div className="text-center">
-                  <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
-                    {formData.type === "walk-in" ? "Choose Barber" : "Select Time & Barber"}
-                  </h1>
-                  <p className="text-zinc-500 dark:text-zinc-400">
-                    {formData.type === "walk-in"
-                      ? "Optional - or skip to join any available barber"
-                      : "Pick a time slot and optionally choose your barber"}
-                  </p>
-                </div>
-
-                {formData.type === "booking" && (
-                  <div>
-                    <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Available Time Slots</label>
-                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                      {DUMMY_TIME_SLOTS.map((time) => (
+                {formData.type === "walk-in" ? (
+                  <>
+                    <div className="text-center">
+                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
+                        Select Service
+                      </h1>
+                      <p className="text-zinc-500 dark:text-zinc-400">Choose the service you need</p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      {DUMMY_SERVICES.map((service) => (
                         <button
-                          key={time}
-                          onClick={() => handleInputChange("time", time)}
-                          className={`py-2 px-3 rounded-lg text-sm font-medium transition-all ${
-                            formData.time === time
-                              ? "bg-linear-to-r from-zinc-900 to-blue-700 dark:from-black dark:to-blue-800 text-white dark:text-white"
-                              : "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                          key={service.id}
+                          onClick={() => handleInputChange("serviceId", formData.serviceId === service.id ? "" : service.id)}
+                          className={`p-4 rounded-xl border-2 shadow-md dark:shadow-lg transition-all text-left ${
+                            formData.serviceId === service.id
+                              ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950"
+                              : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
                           }`}
                         >
-                          {time}
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-medium text-zinc-900 dark:text-zinc-200">{service.name}</p>
+                              <p className="text-xs text-zinc-500 dark:text-zinc-400">{service.duration}</p>
+                            </div>
+                            <p className="font-semibold text-zinc-900 dark:text-zinc-200">{service.price}</p>
+                          </div>
                         </button>
                       ))}
                     </div>
-                  </div>
-                )}
-
-                <div>
-                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">
-                    {formData.type === "walk-in" ? "Select Barber (Optional)" : "Preferred Barber (Optional)"}
-                  </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {DUMMY_BARBERS.map((barber) => (
-                      <button
-                        key={barber.id}
-                        onClick={() => handleInputChange("barberId", formData.barberId === barber.id ? "" : barber.id)}
-                        className={`p-4 rounded-xl border-2 shadow-md dark:shadow-lg transition-all text-left ${
-                          formData.barberId === barber.id
-                            ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950"
-                            : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold ${
-                              formData.barberId === barber.id
+                  </>
+                ) : (
+                  <>
+                    <div className="text-center">
+                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
+                        Select Time & Barber
+                      </h1>
+                      <p className="text-zinc-500 dark:text-zinc-400">Pick a time slot and optionally choose your barber</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Available Time Slots</label>
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                        {DUMMY_TIME_SLOTS.map((time) => (
+                          <button
+                            key={time}
+                            onClick={() => handleInputChange("time", time)}
+                            className={`py-2 px-3 rounded-lg text-sm font-medium transition-all ${
+                              formData.time === time
                                 ? "bg-linear-to-r from-zinc-900 to-blue-700 dark:from-black dark:to-blue-800 text-white dark:text-white"
-                                : "bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300"
+                                : "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700"
                             }`}
                           >
-                            {barber.avatar}
-                          </div>
-                          <div>
-                            <p className="font-medium text-zinc-900 dark:text-zinc-200">{barber.name}</p>
-                            <p className="text-xs text-zinc-500 dark:text-zinc-400">{barber.specialty}</p>
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
+                            {time}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Preferred Barber (Optional)</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {DUMMY_BARBERS.map((barber) => (
+                          <button
+                            key={barber.id}
+                            onClick={() => handleInputChange("barberId", formData.barberId === barber.id ? "" : barber.id)}
+                            className={`p-4 rounded-xl border-2 shadow-md dark:shadow-lg transition-all text-left ${
+                              formData.barberId === barber.id
+                                ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950"
+                                : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold ${
+                                  formData.barberId === barber.id
+                                    ? "bg-linear-to-r from-zinc-900 to-blue-700 dark:from-black dark:to-blue-800 text-white dark:text-white"
+                                    : "bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300"
+                                }`}
+                              >
+                                {barber.avatar}
+                              </div>
+                              <div>
+                                <p className="font-medium text-zinc-900 dark:text-zinc-200">{barber.name}</p>
+                                <p className="text-xs text-zinc-500 dark:text-zinc-400">{barber.specialty}</p>
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
                 <div className="flex gap-3">
                   <button
                     onClick={handlePrevStep}
@@ -490,10 +530,10 @@ export default function BookingPage() {
                   </button>
                   <button
                     onClick={handleNextStep}
-                    disabled={formData.type === "booking" && !isStep3Valid()}
+                    disabled={formData.type === "walk-in" ? !formData.serviceId : (!isStep3Valid())}
                     className="flex-1 h-12 rounded-full bg-linear-to-r from-zinc-900 to-blue-700 dark:from-black dark:to-blue-800 text-white dark:text-white font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {formData.type === "walk-in" && !formData.barberId ? "I don't mind" : "Continue"}
+                    Continue
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
                     </svg>
@@ -502,48 +542,155 @@ export default function BookingPage() {
               </div>
             )}
 
-            {/* Step 4: Enter Details (Booking) or Confirm (Walk-in) */}
+            {/* Step 4: Barber (walk-in) / Services (booking) */}
             {step === 4 && (
+              <div className="space-y-6">
+                {formData.type === "walk-in" ? (
+                  <>
+                    <div className="text-center">
+                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
+                        Choose Barber
+                      </h1>
+                      <p className="text-zinc-500 dark:text-zinc-400">Optional - or skip to join any available barber</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Select Barber (Optional)</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {DUMMY_BARBERS.map((barber) => (
+                          <button
+                            key={barber.id}
+                            onClick={() => handleInputChange("barberId", formData.barberId === barber.id ? "" : barber.id)}
+                            className={`p-4 rounded-xl border-2 shadow-md dark:shadow-lg transition-all text-left ${
+                              formData.barberId === barber.id
+                                ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950"
+                                : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold ${
+                                  formData.barberId === barber.id
+                                    ? "bg-linear-to-r from-zinc-900 to-blue-700 dark:from-black dark:to-blue-800 text-white dark:text-white"
+                                    : "bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300"
+                                }`}
+                              >
+                                {barber.avatar}
+                              </div>
+                              <div>
+                                <p className="font-medium text-zinc-900 dark:text-zinc-200">{barber.name}</p>
+                                <p className="text-xs text-zinc-500 dark:text-zinc-400">{barber.specialty}</p>
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={handlePrevStep}
+                        className="flex-1 h-12 rounded-full border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 font-medium hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
+                      >
+                        Back
+                      </button>
+                      <button
+                        onClick={handleNextStep}
+                        className="flex-1 h-12 rounded-full bg-linear-to-r from-zinc-900 to-blue-700 dark:from-black dark:to-blue-800 text-white dark:text-white font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity"
+                      >
+                        {!formData.barberId ? "I don't mind" : "Continue"}
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                        </svg>
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-center">
+                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
+                        Select Service
+                      </h1>
+                      <p className="text-zinc-500 dark:text-zinc-400">Choose the service you need</p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      {DUMMY_SERVICES.map((service) => (
+                        <button
+                          key={service.id}
+                          onClick={() => handleInputChange("serviceId", formData.serviceId === service.id ? "" : service.id)}
+                          className={`p-4 rounded-xl border-2 shadow-md dark:shadow-lg transition-all text-left ${
+                            formData.serviceId === service.id
+                              ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950"
+                              : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-medium text-zinc-900 dark:text-zinc-200">{service.name}</p>
+                              <p className="text-xs text-zinc-500 dark:text-zinc-400">{service.duration}</p>
+                            </div>
+                            <p className="font-semibold text-zinc-900 dark:text-zinc-200">{service.price}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Name</label>
+                        <input
+                          type="text"
+                          value={formData.name}
+                          onChange={(e) => handleInputChange("name", e.target.value)}
+                          placeholder="Enter your name"
+                          className="w-full h-12 px-4 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 focus:border-blue-500 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all text-zinc-900 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Phone Number</label>
+                        <div className="relative">
+                          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-900 dark:text-zinc-200 font-medium">+60</span>
+                          <input
+                            type="tel"
+                            value={formData.phone.startsWith('+60') ? formData.phone.substring(3) : formData.phone.replace(/^\+?60?/, '')}
+                            onChange={(e) => handlePhoneChange(e.target.value)}
+                            placeholder="123456789"
+                            className="w-full h-12 pl-14 pr-4 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 focus:border-blue-500 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all text-zinc-900 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={handlePrevStep}
+                        className="flex-1 h-12 rounded-full border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 font-medium hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
+                      >
+                        Back
+                      </button>
+                      <button
+                        onClick={handleNextStep}
+                        disabled={!formData.serviceId || !formData.name || !formData.phone}
+                        className="flex-1 h-12 rounded-full bg-linear-to-r from-zinc-900 to-blue-700 dark:from-black dark:to-blue-800 text-white dark:text-white font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Continue
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                        </svg>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Step 5: Booking Summary */}
+            {step === 5 && (
               <div className="space-y-6">
                 <div className="text-center">
                   <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
-                    {formData.type === "walk-in" ? "Confirm Walk-in" : "Your Details"}
+                    {formData.type === "walk-in" ? "Confirm Walk-in" : "Booking Summary"}
                   </h1>
                   <p className="text-zinc-500 dark:text-zinc-400">
-                    {formData.type === "walk-in"
-                      ? "Review your information"
-                      : "Enter your contact information"}
+                    Review your information
                   </p>
                 </div>
-
-                {formData.type === "booking" && (
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Name</label>
-                      <input
-                        type="text"
-                        value={formData.name}
-                        onChange={(e) => handleInputChange("name", e.target.value)}
-                        placeholder="Enter your name"
-                        className="w-full h-12 px-4 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 focus:border-blue-500 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all text-zinc-900 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Phone Number</label>
-                      <div className="relative">
-                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-900 dark:text-zinc-200 font-medium">+60</span>
-                        <input
-                          type="tel"
-                          value={formData.phone.startsWith('+60') ? formData.phone.substring(3) : formData.phone.replace(/^\+?60?/, '')}
-                          onChange={(e) => handlePhoneChange(e.target.value)}
-                          placeholder="123456789"
-                          className="w-full h-12 pl-14 pr-4 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 focus:border-blue-500 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all text-zinc-900 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
 
                 {/* Summary */}
                 <div className="bg-zinc-50 dark:bg-zinc-800 rounded-xl p-4 space-y-3">
@@ -574,6 +721,10 @@ export default function BookingPage() {
                       <span className="font-medium text-zinc-900 dark:text-zinc-200">{formData.time || "-"}</span>
                     </div>
                   )}
+                  <div className="flex justify-between text-sm">
+                    <span className="text-zinc-500 dark:text-zinc-400">Service</span>
+                    <span className="font-medium text-zinc-900 dark:text-zinc-200">{selectedService?.name || "-"}</span>
+                  </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-zinc-500 dark:text-zinc-400">Barber</span>
                     <span className="font-medium text-zinc-900 dark:text-zinc-200">{selectedBarber?.name || "Any Available"}</span>
