@@ -157,10 +157,9 @@ export default function BookingPage() {
   );
   const timeSlotsList = timeSlots.length > 0 ? timeSlots : ["9:00 AM", "10:00 AM", "11:00 AM", "12:00 PM", "1:00 PM", "2:00 PM", "3:00 PM", "4:00 PM", "5:00 PM"];
 
-  const showShopNotFound =
-    (shopId != null && isShopError) ||
-    (shopId != null && !isShopLoading && !shopDetails?.data) ||
-    (shopIdFromPath !== undefined && shopId === null);
+  const isInvalidShopId = shopIdFromPath !== undefined && shopId === null;
+  const isShopLoadFailed = shopId != null && !isShopLoading && (isShopError || !shopDetails?.data);
+  const showShopError = isInvalidShopId || isShopLoadFailed;
 
   const handleTypeSelect = (type: BookingType) => {
     const now = new Date();
@@ -282,22 +281,23 @@ export default function BookingPage() {
 
   const apiError = createBookingMutation.error as Error & { code?: number } | null;
 
-  if (showShopNotFound) {
+  if (showShopError) {
     return (
       <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 flex flex-col">
         <Header />
         <main className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
           <div className="w-full max-w-md bg-white dark:bg-zinc-950 rounded-2xl shadow-lg border border-zinc-100 dark:border-zinc-800 p-8 text-center">
-            <div className="w-20 h-20 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center mx-auto mb-6">
-              <svg className="w-10 h-10 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+            <div className="w-20 h-20 rounded-full bg-red-100 dark:bg-red-950/50 flex items-center justify-center mx-auto mb-6">
+              <svg className="w-10 h-10 text-red-500 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
-            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2">Shop not found</h1>
+            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2">{isInvalidShopId ? "Invalid link" : "Error loading shop"}
+            </h1>
             <p className="text-zinc-500 dark:text-zinc-400 text-sm mb-6">
-              {shopId === null
+              {isInvalidShopId
                 ? "This booking link is invalid. Please check the URL or use the link shared by the shop."
-                : "We couldn’t find this shop. It may have been removed or the link may be incorrect."}
+                : "We couldn’t load this shop. Please try again later or check the link."}
             </p>
             <a
               href="/"
