@@ -215,7 +215,7 @@ export default function BookingPage() {
           booking_date_time: bookingDateTime,
           services_id: serviceIds,
           ...(formData.barberId ? { specialist_id: parseInt(formData.barberId, 10) } : {}),
-          status: "Confirmed",
+          status: "Pending",
           payment_method: "Cash",
           created_from: "booking-web",
           payment_status: "PENDING",
