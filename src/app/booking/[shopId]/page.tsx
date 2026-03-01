@@ -3,25 +3,14 @@
 import { useState, useMemo } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
+import { useQueryClient } from "@tanstack/react-query";
 import { Calendar } from "@/components/ui/calendar";
-import { useShopDetails, useCreateBooking } from "@/lib/tanstack";
+import { useShopDetails, useCreateBooking, useBookingDetails, useAvailableSlots } from "@/lib/tanstack";
+import { useAccessToken, setAccessTokenCookie, getAccessTokenFromCookie } from "@/lib/cookie";
+import { removeExistingBooking } from "@/api/booking";
 import { toBookingDateTimeUTC, nowAsUTC } from "@/lib/datetime";
+import type { CreateBookingRequest, BookingDetailsItem, ExistingBookingFrom409 } from "@/types/booking";
 import type { ServiceItem } from "@/types/shop";
-
-const DUMMY_BARBERS = [
-  { id: "1", name: "Ahmad", avatar: "A" },
-  { id: "2", name: "John", avatar: "J" },
-  { id: "3", name: "Mike", avatar: "M" },
-  { id: "4", name: "David", avatar: "D" },
-];
-
-const DUMMY_SERVICES = [
-  { id: "1", name: "Haircut", price: "RM 25", duration: "30 min" },
-  { id: "2", name: "Haircut + Beard", price: "RM 40", duration: "45 min" },
-  { id: "3", name: "Beard Trim", price: "RM 15", duration: "20 min" },
-  { id: "4", name: "Hair Wash", price: "RM 10", duration: "15 min" },
-  { id: "5", name: "Full Service", price: "RM 50", duration: "60 min" },
-];
 
 function formatServicePrice(service: { price?: unknown }): string {
   const p = service.price;
@@ -83,6 +72,31 @@ function buildTimeSlotsFromHours(
   return slots;
 }
 
+const MALAYSIA_TZ = "Asia/Kuala_Lumpur";
+
+/** Format booking_date_from (ISO string) to Malaysia date and time for display */
+function formatBookingDateTimeMalaysia(bookingDateFrom: string): { date: string; time: string } {
+  try {
+    const d = new Date(bookingDateFrom);
+    const dateStr = d.toLocaleDateString("en-MY", {
+      timeZone: MALAYSIA_TZ,
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    const timeStr = d.toLocaleTimeString("en-MY", {
+      timeZone: MALAYSIA_TZ,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    return { date: dateStr, time: timeStr };
+  } catch {
+    return { date: bookingDateFrom, time: "" };
+  }
+}
+
 type BookingType = "walk-in" | "booking" | null;
 
 interface FormData {
@@ -90,7 +104,7 @@ interface FormData {
   name: string;
   phone: string;
   shopId: string;
-  barberId: string;
+  specialistId: string;
   date: string;
   time: string;
   serviceIds: string[];
@@ -111,19 +125,38 @@ export default function BookingPage() {
     return Number.isNaN(n) ? null : n;
   }, [shopIdFromPath]);
 
+  const queryClient = useQueryClient();
   const { data: shopDetails, isError: isShopError, isLoading: isShopLoading } = useShopDetails(shopId);
   const createBookingMutation = useCreateBooking();
+  const accessToken = useAccessToken();
+  const { confirmedBookings, isLoading: isBookingDetailsLoading } = useBookingDetails({
+    accessToken,
+    shopId,
+  });
 
   const [step, setStep] = useState(1);
+  const [conflictNoTokenMessage, setConflictNoTokenMessage] = useState(false);
+  const [showExistingBookingPrompt, setShowExistingBookingPrompt] = useState(false);
+  const [existingBookingToDisplay, setExistingBookingToDisplay] = useState<BookingDetailsItem | null>(null);
+  const [pendingRetryPayload, setPendingRetryPayload] = useState<CreateBookingRequest | null>(null);
+  const [isCancellingExisting, setIsCancellingExisting] = useState(false);
+  const [showCancelSuccess, setShowCancelSuccess] = useState(false);
   const [formData, setFormData] = useState<FormData>({
     type: null,
     name: "",
     phone: "+60",
     shopId: "",
-    barberId: "",
+    specialistId: "",
     date: formatDateLocal(new Date()),
     time: "",
     serviceIds: [],
+  });
+
+  const { specialists: specialistsFromSlots, getTimeOptionsForDate, isLoading: isAvailableSlotsLoading } = useAvailableSlots({
+    shopId,
+    startDate: formData.date || formatDateLocal(new Date()),
+    endDate: formData.date || formatDateLocal(new Date()),
+    specialistId: formData.specialistId ? parseInt(formData.specialistId, 10) : undefined,
   });
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
@@ -135,19 +168,29 @@ export default function BookingPage() {
     [shopDetails]
   );
   const specialistsFromApi = shopDetails?.data?.specialists ?? [];
-
-  const displayShopName =
-    shop?.name ?? (shopId != null ? "Shop " + shopId : "Trimmly");
-  type ListService = ServiceItem | (typeof DUMMY_SERVICES)[number];
-  const servicesList: ListService[] = servicesFromApi.length > 0 ? servicesFromApi : DUMMY_SERVICES;
-  const barbersList =
-    specialistsFromApi.length > 0
-      ? specialistsFromApi.map((s: { specialist_id: number; name: string }) => ({
+  const specialistsFromSlotsList =
+    formData.type === "booking" && specialistsFromSlots.length > 0
+      ? specialistsFromSlots.map((s) => ({
           id: String(s.specialist_id),
+          userId: s.user_id,
           name: s.name,
           avatar: s.name.charAt(0),
         }))
-      : DUMMY_BARBERS;
+      : [];
+
+  const displayShopName =
+    shop?.name ?? (shopId != null ? "Shop " + shopId : "Trimmly");
+  const servicesList: ServiceItem[] = servicesFromApi;
+  const specialistsList =
+    specialistsFromSlotsList.length > 0
+      ? specialistsFromSlotsList
+      : specialistsFromApi.length > 0
+        ? specialistsFromApi.map((s: { specialist_id: number; name: string }) => ({
+            id: String(s.specialist_id),
+            name: s.name,
+            avatar: s.name.charAt(0),
+          }))
+        : [];
 
   const openingHours = shopDetails?.data?.opening_hours ?? [];
   const gapMinutes = shop?.booking_suggestion_gap ?? 30;
@@ -155,7 +198,6 @@ export default function BookingPage() {
     () => buildTimeSlotsFromHours(formData.date, openingHours, gapMinutes),
     [formData.date, openingHours, gapMinutes]
   );
-  const timeSlotsList = timeSlots.length > 0 ? timeSlots : ["9:00 AM", "10:00 AM", "11:00 AM", "12:00 PM", "1:00 PM", "2:00 PM", "3:00 PM", "4:00 PM", "5:00 PM"];
 
   const isInvalidShopId = shopIdFromPath !== undefined && shopId === null;
   const isShopLoadFailed = shopId != null && !isShopLoading && (isShopError || !shopDetails?.data);
@@ -169,7 +211,11 @@ export default function BookingPage() {
   };
 
   const handleInputChange = (field: keyof FormData, value: string) => {
-    setFormData((prev) => ({ ...prev, [field]: value }));
+    setFormData((prev) => {
+      const next = { ...prev, [field]: value };
+      if (field === "specialistId") next.time = "";
+      return next;
+    });
   };
 
   const handleServiceToggle = (sid: string) => {
@@ -195,39 +241,128 @@ export default function BookingPage() {
   };
 
   const handleNextStep = () => setStep((prev) => prev + 1);
-  const handlePrevStep = () => setStep((prev) => prev - 1);
+  const handlePrevStep = () => {
+    setConflictNoTokenMessage(false);
+    setShowExistingBookingPrompt(false);
+    setExistingBookingToDisplay(null);
+    setPendingRetryPayload(null);
+    setShowCancelSuccess(false);
+    setStep((prev) => prev - 1);
+  };
+
+  const onSuccess = (res: Awaited<ReturnType<typeof createBookingMutation.mutateAsync>>) => {
+    setBookingResult({
+      booking_id: res.data.booking_id,
+      queue_number: res.data.queue_number,
+    });
+    setIsSubmitted(true);
+    if (res.data.access_token) {
+      setAccessTokenCookie(res.data.access_token);
+    }
+    queryClient.invalidateQueries({ queryKey: ["booking", "details"] });
+  };
+
+  const handleConfirmCancelExisting = async () => {
+    const token = getAccessTokenFromCookie();
+    if (!token) return;
+    setIsCancellingExisting(true);
+    try {
+      await removeExistingBooking({ accessToken: token });
+      setShowExistingBookingPrompt(false);
+      setExistingBookingToDisplay(null);
+      setPendingRetryPayload(null);
+      setShowCancelSuccess(true);
+    } catch {
+      // Error shown via createBookingMutation.error
+    } finally {
+      setIsCancellingExisting(false);
+    }
+  };
+
+  const handleDismissExistingPrompt = () => {
+    setShowExistingBookingPrompt(false);
+    setExistingBookingToDisplay(null);
+    setPendingRetryPayload(null);
+  };
 
   const handleSubmit = async () => {
+    setConflictNoTokenMessage(false);
     if (shopId != null && shop) {
       const bookingDateTime =
         formData.type === "walk-in"
           ? nowAsUTC()
-          : toBookingDateTimeUTC(formData.date, formData.time);
+          : /^\d{4}-\d{2}-\d{2}T/.test(formData.time)
+            ? new Date(formData.time).toISOString()
+            : toBookingDateTimeUTC(formData.date, formData.time);
       const serviceIds = formData.serviceIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n));
       if (serviceIds.length === 0) return;
+      const payload: CreateBookingRequest = {
+        shop_id: shopId,
+        user_details: {
+          phone_number: formData.phone.trim(),
+          name: formData.name.trim() || undefined,
+        },
+        booking_date_time: bookingDateTime,
+        services_id: serviceIds,
+        ...(formData.specialistId ? { specialist_id: parseInt(formData.specialistId, 10) } : {}),
+        status: "Pending",
+        payment_method: "Cash",
+        created_from: "booking-web",
+        payment_status: "PENDING",
+        booking_method: formData.type === "walk-in" ? "Walk In" : "Online",
+      };
       try {
-        const res = await createBookingMutation.mutateAsync({
-          shop_id: shopId,
-          user_details: {
-            phone_number: formData.phone.trim(),
-            name: formData.name.trim() || undefined,
-          },
-          booking_date_time: bookingDateTime,
-          services_id: serviceIds,
-          ...(formData.barberId ? { specialist_id: parseInt(formData.barberId, 10) } : {}),
-          status: "Pending",
-          payment_method: "Cash",
-          created_from: "booking-web",
-          payment_status: "PENDING",
-          booking_method: formData.type === "walk-in" ? "Walk In" : "Online",
-        });
-        setBookingResult({
-          booking_id: res.data.booking_id,
-          queue_number: res.data.queue_number,
-        });
-        setIsSubmitted(true);
-      } catch {
-        // Error shown via createBookingMutation.error (code + message)
+        const res = await createBookingMutation.mutateAsync(payload);
+        onSuccess(res);
+      } catch (err) {
+        const code = (err as Error & { code?: number }).code;
+        if (code === 409) {
+          const conflictData = (err as Error & { data?: { existing_booking?: ExistingBookingFrom409; access_token?: string } }).data;
+          const existingFrom409 = conflictData?.existing_booking;
+          if (conflictData?.access_token) {
+            setAccessTokenCookie(conflictData.access_token);
+          }
+          const token = getAccessTokenFromCookie();
+          if (token) {
+            if (existingFrom409) {
+              const displayItem: BookingDetailsItem = {
+                booking_info: {
+                  id: existingFrom409.id,
+                  shop_id: existingFrom409.shop_id,
+                  customer_id: typeof existingFrom409.customer_id === "object" && existingFrom409.customer_id?.Valid
+                    ? existingFrom409.customer_id.Int64
+                    : (existingFrom409.customer_id as number) ?? 0,
+                  specialist_id: existingFrom409.specialist_id ?? null,
+                  reservation_phone_no: existingFrom409.reservation_phone_no ?? "",
+                  reservation_name: existingFrom409.reservation_name ?? null,
+                  reservation_email: existingFrom409.reservation_email ?? null,
+                  booking_date_from: existingFrom409.booking_date_from,
+                  booking_date_to: existingFrom409.booking_date_to,
+                  duration_minutes: existingFrom409.duration_minutes ?? 0,
+                  total_price: existingFrom409.total_price ?? 0,
+                  currency: existingFrom409.currency ?? "",
+                  status: typeof existingFrom409.status === "object" && existingFrom409.status?.Valid
+                    ? (existingFrom409.status as { String?: string }).String ?? ""
+                    : (existingFrom409.status as string) ?? "",
+                  created_from: typeof existingFrom409.created_from === "object" && existingFrom409.created_from?.Valid
+                    ? (existingFrom409.created_from as { String?: string }).String ?? ""
+                    : (existingFrom409.created_from as string) ?? "",
+                  created_at: existingFrom409.created_at ?? "",
+                  updated_at: existingFrom409.updated_at ?? "",
+                },
+                shop_info: null,
+              };
+              setExistingBookingToDisplay(displayItem);
+            } else {
+              setExistingBookingToDisplay(null);
+            }
+            setPendingRetryPayload(payload);
+            setShowExistingBookingPrompt(true);
+          } else {
+            setConflictNoTokenMessage(true);
+          }
+        }
+        // Other errors shown via createBookingMutation.error
       }
       return;
     }
@@ -244,7 +379,7 @@ export default function BookingPage() {
       name: "",
       phone: "+60",
       shopId: "",
-      barberId: "",
+      specialistId: "",
       date: formatDateLocal(new Date()),
       time: "",
       serviceIds: [],
@@ -252,6 +387,9 @@ export default function BookingPage() {
     setStep(1);
     setIsSubmitted(false);
     setBookingResult(null);
+    setShowExistingBookingPrompt(false);
+    setExistingBookingToDisplay(null);
+    setPendingRetryPayload(null);
   };
 
   const isStep2Valid = () => {
@@ -262,28 +400,23 @@ export default function BookingPage() {
   };
 
   const isStep3Valid = () => {
-    if (formData.type === "booking") return formData.time !== "";
+    if (formData.type === "booking") return formData.specialistId !== "" && formData.time !== "";
     return true;
   };
 
   const selectedShop = shop
     ? { id: String(shop.id), name: shop.name, address: shopDetails?.data?.address?.formatted_address ?? "" }
     : { id: String(shopId ?? ""), name: displayShopName, address: "" };
-  const selectedBarber = barbersList.find((b: { id: string }) => b.id === formData.barberId);
-  const selectedServices =
-    servicesFromApi.length > 0
-      ? formData.serviceIds
-          .map((id) => servicesFromApi.find((s) => String(s.id) === id))
-          .filter((s): s is ServiceItem => s != null)
-      : formData.serviceIds
-          .map((id) => DUMMY_SERVICES.find((s) => s.id === id))
-          .filter((s): s is (typeof DUMMY_SERVICES)[number] => s != null);
+  const selectedSpecialist = specialistsList.find((b: { id: string }) => b.id === formData.specialistId);
+  const selectedServices = formData.serviceIds
+    .map((id) => servicesFromApi.find((s) => String(s.id) === id))
+    .filter((s): s is ServiceItem => s != null);
 
   const apiError = createBookingMutation.error as Error & { code?: number } | null;
 
   if (showShopError) {
     return (
-      <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 flex flex-col">
+      <div className="min-h-screen bg-[#FAFAFA] dark:bg-zinc-950 flex flex-col">
         <Header />
         <main className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
           <div className="w-full max-w-md bg-white dark:bg-zinc-950 rounded-2xl shadow-lg border border-zinc-100 dark:border-zinc-800 p-8 text-center">
@@ -314,7 +447,7 @@ export default function BookingPage() {
 
   if (isSubmitted) {
     return (
-      <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 flex flex-col">
+      <div className="min-h-screen bg-[#FAFAFA] dark:bg-zinc-950 flex flex-col">
         <Header />
         <main className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
           <div className="w-full max-w-md bg-white dark:bg-zinc-950 rounded-2xl shadow-lg border border-zinc-100 dark:border-zinc-800 p-6 sm:p-8 text-center">
@@ -353,7 +486,9 @@ export default function BookingPage() {
               {formData.type === "booking" && formData.time && (
                 <div className="flex justify-between">
                   <span className="text-zinc-500 dark:text-zinc-400">Time</span>
-                  <span className="font-medium text-zinc-900 dark:text-zinc-200">{formData.time}</span>
+                  <span className="font-medium text-zinc-900 dark:text-zinc-200">
+                    {/^\d{4}-\d{2}-\d{2}T/.test(formData.time) ? new Date(formData.time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : formData.time}
+                  </span>
                 </div>
               )}
               {formData.type === "walk-in" && (bookingResult?.queue_number ?? formData.queueNumber) != null && (
@@ -368,10 +503,10 @@ export default function BookingPage() {
                   <span className="font-medium text-zinc-900 dark:text-zinc-200">{bookingResult.booking_id}</span>
                 </div>
               )}
-              {selectedBarber && (
+              {selectedSpecialist && (
                 <div className="flex justify-between">
-                  <span className="text-zinc-500 dark:text-zinc-400">Barber</span>
-                  <span className="font-medium text-zinc-900 dark:text-zinc-200">{selectedBarber.name}</span>
+                  <span className="text-zinc-500 dark:text-zinc-400">Specialist</span>
+                  <span className="font-medium text-zinc-900 dark:text-zinc-200">{selectedSpecialist.name}</span>
                 </div>
               )}
             </div>
@@ -391,11 +526,63 @@ export default function BookingPage() {
     );
   }
 
+  const formatBookingDateTime = (dateFrom: string) => {
+    try {
+      const d = new Date(dateFrom);
+      return d.toLocaleDateString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    } catch {
+      return dateFrom;
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 flex flex-col">
+    <div className="min-h-screen bg-[#FAFAFA] dark:bg-zinc-950 flex flex-col">
       <Header />
       <main className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
         <div className="w-full max-w-lg">
+          {accessToken && (
+            <div className="mb-6">
+              {isBookingDetailsLoading ? (
+                <div className="bg-white dark:bg-zinc-950 rounded-2xl border border-zinc-200 dark:border-zinc-900 p-4 text-center text-zinc-500 dark:text-zinc-400 text-sm">
+                  Loading your bookings…
+                </div>
+              ) : confirmedBookings.length > 0 ? (
+                <div className="bg-white dark:bg-zinc-950 rounded-2xl border border-zinc-200 dark:border-zinc-900 p-4 sm:p-5">
+                  <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 mb-3">
+                    Your confirmed bookings
+                  </h2>
+                  <ul className="space-y-3">
+                    {confirmedBookings.map((item) => {
+                      const info = item.booking_info;
+                      const shopName = item.shop_info?.name ?? `Shop #${info.shop_id}`;
+                      return (
+                        <li
+                          key={info.id}
+                          className="flex flex-col gap-1 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 p-3 text-sm"
+                        >
+                          <span className="font-medium text-zinc-900 dark:text-zinc-200">
+                            {shopName}
+                          </span>
+                          <span className="text-zinc-500 dark:text-zinc-400">
+                            {formatBookingDateTime(info.booking_date_from)}
+                          </span>
+                          <span className="text-zinc-500 dark:text-zinc-400">
+                            {info.reservation_name || info.reservation_phone_no} · {info.status}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          )}
           <div className="mb-6 sm:mb-8">
             <div className="flex items-center justify-center gap-2">
               {[1, 2, 3, 4, 5].map((i) => (
@@ -429,8 +616,8 @@ export default function BookingPage() {
               <span className="text-xs sm:text-sm text-zinc-500 dark:text-zinc-400">
                 {step === 1 && "Choose Type"}
                 {step === 2 && (formData.type === "walk-in" ? "Your Details" : "Select Date & Shop")}
-                {step === 3 && (formData.type === "walk-in" ? "Select Service" : "Choose Barber")}
-                {step === 4 && (formData.type === "walk-in" ? "Choose Barber" : "Select Service")}
+                {step === 3 && (formData.type === "walk-in" ? "Select Service" : "Choose Specialist & Time")}
+                {step === 4 && (formData.type === "walk-in" ? "Choose Specialist" : "Select Service")}
                 {step === 5 && "Confirm"}
               </span>
             </div>
@@ -533,7 +720,7 @@ export default function BookingPage() {
                   {formData.type === "walk-in" && (
                     <>
                       <div>
-                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Name (optional)</label>
+                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Name</label>
                         <input
                           type="text"
                           value={formData.name}
@@ -611,50 +798,66 @@ export default function BookingPage() {
                 ) : (
                   <>
                     <div className="text-center">
-                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">Select Time & Barber</h1>
-                      <p className="text-zinc-500 dark:text-zinc-400">Pick a time slot and optionally choose your barber</p>
+                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">Choose Specialist & Time</h1>
+                      <p className="text-zinc-500 dark:text-zinc-400">Select your specialist first, then pick an available time slot</p>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Available Time Slots</label>
-                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                        {timeSlotsList.map((time) => (
-                          <button
-                            key={time}
-                            onClick={() => handleInputChange("time", time)}
-                            className={`py-2 px-3 rounded-lg text-sm font-medium transition-all ${
-                              formData.time === time ? "bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white dark:text-white" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700"
-                            }`}
-                          >
-                            {time}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Preferred Barber (Optional)</label>
-                      <div className="grid grid-cols-2 gap-3">
-                        {barbersList.map((barber: { id: string; name: string; avatar: string }) => (
-                          <button
-                            key={barber.id}
-                            onClick={() => handleInputChange("barberId", formData.barberId === barber.id ? "" : barber.id)}
-                            className={`p-4 rounded-xl border-2 shadow-md dark:shadow-lg transition-all text-left ${
-                              formData.barberId === barber.id ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950" : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
-                            }`}
-                          >
-                            <div className="flex gap-3">
-                              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold ${
-                                formData.barberId === barber.id ? "bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white dark:text-white" : "bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300"
-                              }`}>
-                                {barber.avatar}
+                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">1. Preferred Specialist</label>
+                      {isAvailableSlotsLoading && !formData.specialistId ? (
+                        <p className="text-sm text-zinc-500 dark:text-zinc-400 py-3">Loading specialists…</p>
+                      ) : specialistsList.length === 0 ? (
+                        <p className="text-sm text-zinc-500 dark:text-zinc-400 py-3 rounded-xl bg-zinc-100 dark:bg-zinc-800/50 px-4">No specialists available for this date.</p>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-3">
+                          {specialistsList.map((specialist: { id: string; name: string; avatar: string }) => (
+                            <button
+                              key={specialist.id}
+                              type="button"
+                              onClick={() => handleInputChange("specialistId", formData.specialistId === specialist.id ? "" : specialist.id)}
+                              className={`p-4 rounded-xl border-2 shadow-md dark:shadow-lg transition-all text-left ${
+                                formData.specialistId === specialist.id ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950" : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
+                              }`}
+                            >
+                              <div className="flex gap-3">
+                                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold ${
+                                  formData.specialistId === specialist.id ? "bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white dark:text-white" : "bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300"
+                                }`}>
+                                  {specialist.avatar}
+                                </div>
+                                <div>
+                                  <p className="font-medium text-zinc-900 dark:text-zinc-200">{specialist.name}</p>
+                                </div>
                               </div>
-                              <div>
-                                <p className="font-medium text-zinc-900 dark:text-zinc-200">{barber.name}</p>
-                              </div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
+                    {formData.specialistId && (
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">2. Available Time Slots</label>
+                        {isAvailableSlotsLoading ? (
+                          <p className="text-sm text-zinc-500 dark:text-zinc-400 py-2">Loading time slots…</p>
+                        ) : getTimeOptionsForDate(formData.date).length === 0 ? (
+                          <p className="text-sm text-zinc-500 dark:text-zinc-400 py-3 rounded-xl bg-zinc-100 dark:bg-zinc-800/50 px-4">No slots available for this specialist on the selected date.</p>
+                        ) : (
+                          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                            {getTimeOptionsForDate(formData.date).map((slot) => (
+                              <button
+                                key={slot.value}
+                                type="button"
+                                onClick={() => handleInputChange("time", slot.value)}
+                                className={`py-2 px-3 rounded-lg text-sm font-medium transition-all ${
+                                  formData.time === slot.value ? "bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white dark:text-white" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                                }`}
+                              >
+                                {slot.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
                 <div className="flex gap-3">
@@ -672,28 +875,28 @@ export default function BookingPage() {
                 {formData.type === "walk-in" ? (
                   <>
                     <div className="text-center">
-                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">Choose Barber</h1>
-                      <p className="text-zinc-500 dark:text-zinc-400">Optional - or skip to join any available barber</p>
+                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">Choose Specialist</h1>
+                      <p className="text-zinc-500 dark:text-zinc-400">Optional - or skip to join any available specialist</p>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Select Barber (Optional)</label>
+                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Select Specialist (Optional)</label>
                       <div className="grid grid-cols-2 gap-3">
-                        {barbersList.map((barber: { id: string; name: string; avatar: string }) => (
+                        {specialistsList.map((specialist: { id: string; name: string; avatar: string }) => (
                           <button
-                            key={barber.id}
-                            onClick={() => handleInputChange("barberId", formData.barberId === barber.id ? "" : barber.id)}
+                            key={specialist.id}
+                            onClick={() => handleInputChange("specialistId", formData.specialistId === specialist.id ? "" : specialist.id)}
                             className={`p-4 rounded-xl border-2 shadow-md dark:shadow-lg transition-all text-left ${
-                              formData.barberId === barber.id ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950" : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
+                              formData.specialistId === specialist.id ? "border-blue-500 dark:border-blue-500 bg-blue-50 dark:bg-zinc-950" : "border-zinc-200 dark:border-zinc-700 dark:bg-zinc-950 hover:border-zinc-300 dark:hover:border-zinc-600"
                             }`}
                           >
                             <div className="flex gap-3">
                               <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold ${
-                                formData.barberId === barber.id ? "bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white dark:text-white" : "bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300"
+                                formData.specialistId === specialist.id ? "bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white dark:text-white" : "bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300"
                               }`}>
-                                {barber.avatar}
+                                {specialist.avatar}
                               </div>
                               <div>
-                                <p className="font-medium text-zinc-900 dark:text-zinc-200">{barber.name}</p>
+                                <p className="font-medium text-zinc-900 dark:text-zinc-200">{specialist.name}</p>
                               </div>
                             </div>
                           </button>
@@ -703,7 +906,7 @@ export default function BookingPage() {
                     <div className="flex gap-3">
                       <button onClick={handlePrevStep} className="flex-1 h-12 rounded-full border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 font-medium hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors">Back</button>
                       <button onClick={handleNextStep} className="flex-1 h-12 rounded-full bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white dark:text-white font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity">
-                        {!formData.barberId ? "I don't mind" : "Continue"}
+                        {!formData.specialistId ? "I don't mind" : "Continue"}
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
                       </button>
                     </div>
@@ -714,7 +917,9 @@ export default function BookingPage() {
                       <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">Select Service</h1>
                       <p className="text-zinc-500 dark:text-zinc-400">Choose one or more services</p>
                     </div>
-                    <div className="grid grid-cols-1 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">Select Service</label>
+                      <div className="grid grid-cols-1 gap-3">
                       {servicesList.map((service: { id: number | string; name: string; duration?: string; price?: unknown }) => {
                         const sid = String(service.id);
                         const selected = formData.serviceIds.includes(sid);
@@ -744,10 +949,11 @@ export default function BookingPage() {
                           </button>
                         );
                       })}
+                      </div>
                     </div>
                     <div className="space-y-4">
                       <div>
-                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Name (optional)</label>
+                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Name</label>
                         <input
                           type="text"
                           value={formData.name}
@@ -784,6 +990,94 @@ export default function BookingPage() {
 
             {step === 5 && (
               <div className="space-y-6">
+                {showExistingBookingPrompt ? (
+                  <>
+                    <div className="text-center">
+                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
+                        Existing booking
+                      </h1>
+                      <p className="text-zinc-500 dark:text-zinc-400">
+                        You already have an existing booking
+                        {existingBookingToDisplay ? (
+                          <>
+                            {" "}on{" "}
+                            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+                              {formatBookingDateTimeMalaysia(existingBookingToDisplay.booking_info.booking_date_from).date}
+                            </span>
+                            {" "}at{" "}
+                            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+                              {formatBookingDateTimeMalaysia(existingBookingToDisplay.booking_info.booking_date_from).time}
+                            </span>
+                            {" "}(Malaysia time)
+                            {existingBookingToDisplay.shop_info?.name ? (
+                              <> at {existingBookingToDisplay.shop_info.name}</>
+                            ) : null}
+                            .
+                          </>
+                        ) : null}
+                        {" "}Would you like to cancel it?
+                      </p>
+                    </div>
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={handleDismissExistingPrompt}
+                        className="flex-1 h-12 rounded-full border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 font-medium hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
+                      >
+                        No
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleConfirmCancelExisting()}
+                        disabled={isCancellingExisting}
+                        className="flex-1 h-12 rounded-full bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white dark:text-white font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isCancellingExisting ? (
+                          <span className="animate-pulse">Cancelling…</span>
+                        ) : (
+                          "Yes"
+                        )}
+                      </button>
+                    </div>
+                    {apiError && !conflictNoTokenMessage && !showExistingBookingPrompt && (apiError as Error & { code?: number }).code !== 409 && (
+                      <div className="rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 p-4 text-left">
+                        <p className="text-sm font-medium text-red-800 dark:text-red-200">
+                          {typeof (apiError as { code?: number }).code === "number" && (
+                            <span className="mr-2">Error {(apiError as Error & { code?: number }).code}:</span>
+                          )}
+                          {apiError.message}
+                        </p>
+                      </div>
+                    )}
+                  </>
+                ) : showCancelSuccess ? (
+                  <div className="text-center space-y-6">
+                    <div className="w-16 h-16 rounded-full bg-green-100 dark:bg-green-950/50 flex items-center justify-center mx-auto">
+                      <svg className="w-8 h-8 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
+                        Booking removed
+                      </h1>
+                      <p className="text-zinc-500 dark:text-zinc-400">
+                        Your previous booking has been cancelled. You can now continue with your new booking.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCancelSuccess(false)}
+                      className="w-full h-12 rounded-full bg-linear-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-black/90 text-white font-medium flex items-center justify-center gap-2 hover:opacity-90 transition-opacity"
+                    >
+                      Continue to booking
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                      </svg>
+                    </button>
+                  </div>
+                ) : (
+                  <>
                 <div className="text-center">
                   <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-zinc-200 mb-2 tracking-tight">
                     {formData.type === "walk-in" ? "Confirm Walk-in" : "Booking Summary"}
@@ -809,7 +1103,9 @@ export default function BookingPage() {
                   {formData.type === "booking" && (
                     <div className="flex justify-between text-sm">
                       <span className="text-zinc-500 dark:text-zinc-400">Time</span>
-                      <span className="font-medium text-zinc-900 dark:text-zinc-200">{formData.time || "-"}</span>
+                      <span className="font-medium text-zinc-900 dark:text-zinc-200">
+                      {formData.time ? (/^\d{4}-\d{2}-\d{2}T/.test(formData.time) ? new Date(formData.time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : formData.time) : "-"}
+                    </span>
                     </div>
                   )}
                   <div className="flex justify-between text-sm">
@@ -819,8 +1115,8 @@ export default function BookingPage() {
                     </span>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-zinc-500 dark:text-zinc-400">Barber</span>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-200">{selectedBarber?.name || "Any Available"}</span>
+                    <span className="text-zinc-500 dark:text-zinc-400">Specialist</span>
+                    <span className="font-medium text-zinc-900 dark:text-zinc-200">{selectedSpecialist?.name || "Any Available"}</span>
                   </div>
                   {formData.name && (
                     <div className="flex justify-between text-sm">
@@ -835,7 +1131,14 @@ export default function BookingPage() {
                     </div>
                   )}
                 </div>
-                {apiError && (
+                {conflictNoTokenMessage && (
+                  <div className="rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 p-4 text-left">
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                      You have an existing booking. Please sign in or use the same device where you booked.
+                    </p>
+                  </div>
+                )}
+                {apiError && !conflictNoTokenMessage && !showExistingBookingPrompt && (apiError as Error & { code?: number }).code !== 409 && (
                   <div className="rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 p-4 text-left">
                     <p className="text-sm font-medium text-red-800 dark:text-red-200">
                       {typeof (apiError as { code?: number }).code === "number" && (
@@ -864,6 +1167,8 @@ export default function BookingPage() {
                     )}
                   </button>
                 </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -876,7 +1181,7 @@ export default function BookingPage() {
 
 function Header() {
   return (
-    <header className="bg-white dark:bg-zinc-950">
+    <header className="bg-[#FAFAFA] dark:bg-zinc-950">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-center h-20">
           <Image src="/logo-light-full.png" alt="Trimmly" width={220} height={64} className="h-14 w-auto dark:hidden" priority />
@@ -889,7 +1194,7 @@ function Header() {
 
 function Footer() {
   return (
-    <footer className="bg-white dark:bg-zinc-950 border-t border-zinc-100 dark:border-zinc-800 py-4">
+    <footer className="bg-[#FAFAFA] dark:bg-zinc-950 border-t border-zinc-200 dark:border-zinc-800 py-4">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-center">
           <p className="text-sm text-zinc-500 dark:text-zinc-400">© 2024-2026 Trimmly Inc.</p>

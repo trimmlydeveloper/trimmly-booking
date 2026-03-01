@@ -43,9 +43,10 @@ export async function apiFetch<T>(
     throw new Error("Invalid response");
   }
   if (!res.ok) {
-    const body = json as { code?: number; message?: string };
-    const err = new Error(body.message ?? `HTTP ${res.status}`) as Error & { code?: number };
+    const body = json as { code?: number; message?: string; data?: unknown };
+    const err = new Error(body.message ?? `HTTP ${res.status}`) as Error & { code?: number; data?: unknown };
     err.code = body.code ?? res.status;
+    err.data = body.data;
     throw err;
   }
   return json;
